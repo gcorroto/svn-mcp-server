@@ -11,6 +11,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { 
   isCommandBlocked,
+  isCommandAllowed,
+  isSVNCommand,
   isArgumentBlocked,
   parseCommand,
   extractCommandName,
@@ -24,6 +26,7 @@ import type { ServerConfig, CommandHistoryEntry, SSHConnectionConfig } from './t
 import { SSHConnectionPool } from './utils/ssh.js';
 import { createRequire } from 'module';
 import { createSSHConnection, readSSHConnections, updateSSHConnection, deleteSSHConnection } from './utils/sshManager.js';
+import { createSVNRepository, readSVNRepositories, updateSVNRepository, deleteSVNRepository, getSVNRepository, buildSVNCommand, validateSVNWorkingCopy, getSVNExecutablePath } from './utils/svnManager.js';
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
 
@@ -57,7 +60,7 @@ class CLIServer {
   constructor(config: ServerConfig) {
     this.config = config;
     this.server = new Server({
-      name: "windows-cli-server",
+      name: "svn-mcp-server",
       version: packageJson.version,
     }, {
       capabilities: {
@@ -86,6 +89,16 @@ class CLIServer {
     }
   
     const { command: executable, args } = parseCommand(command);
+  
+    // Check if command is allowed (if allowedCommands is configured)
+    if (this.config.security.allowedCommands && this.config.security.allowedCommands.length > 0) {
+      if (!isCommandAllowed(executable, this.config.security.allowedCommands)) {
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `Command is not in allowed list: "${extractCommandName(executable)}". Allowed commands: ${this.config.security.allowedCommands.join(', ')}`
+        );
+      }
+    }
   
     // Check for blocked commands
     if (isCommandBlocked(executable, Array.from(this.blockedCommands))) {
@@ -124,37 +137,67 @@ class CLIServer {
   private setupHandlers(): void {
     // List available resources
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
-      const sshConnections = readSSHConnections() as Record<string, any>;
+      const resources: any[] = [];
       
-      // Create resources for each SSH connection
-      const resources = Object.entries(sshConnections).map(([id, config]) => ({
-        uri: `ssh://${id}`,
-        name: `SSH Connection: ${id}`,
-        description: `SSH connection to ${config.host}:${config.port} as ${config.username}`,
-        mimeType: "application/json"
-      }));
+      // Add SVN repositories resources if SVN is enabled
+      if (this.config.svn.enabled) {
+        const svnRepositories = readSVNRepositories();
+        
+        // Create resources for each SVN repository
+        Object.entries(svnRepositories).forEach(([id, config]) => {
+          resources.push({
+            uri: `svn://${id}`,
+            name: `SVN Repository: ${id}`,
+            description: `SVN repository at ${config.url} (working copy: ${config.workingCopy})`,
+            mimeType: "application/json"
+          });
+        });
+        
+        // Add a resource for SVN configuration
+        resources.push({
+          uri: "svn://config",
+          name: "SVN Configuration",
+          description: "All SVN repository configurations and settings",
+          mimeType: "application/json"
+        });
+      }
+      
+      // Add SSH connections if SSH is enabled
+      if (this.config.ssh.enabled) {
+        const sshConnections = readSSHConnections() as Record<string, any>;
+        
+        // Create resources for each SSH connection
+        Object.entries(sshConnections).forEach(([id, config]) => {
+          resources.push({
+            uri: `ssh://${id}`,
+            name: `SSH Connection: ${id}`,
+            description: `SSH connection to ${config.host}:${config.port} as ${config.username}`,
+            mimeType: "application/json"
+          });
+        });
+        
+        // Add a resource for SSH configuration
+        resources.push({
+          uri: "ssh://config",
+          name: "SSH Configuration",
+          description: "All SSH connection configurations",
+          mimeType: "application/json"
+        });
+      }
       
       // Add a resource for the current working directory
       resources.push({
         uri: "cli://currentdir",
         name: "Current Working Directory",
-        description: "The current working directory of the CLI server",
+        description: "The current working directory of the SVN MCP server",
         mimeType: "text/plain"
       });
-      
-      // Add a resource for SSH configuration
-      resources.push({
-        uri: "ssh://config",
-        name: "SSH Configuration",
-        description: "All SSH connection configurations",
-        mimeType: "application/json"
-      });
 
-      // Add a resource for CLI configuration
+      // Add a resource for server configuration
       resources.push({
         uri: "cli://config",
-        name: "CLI Server Configuration",
-        description: "Main CLI server configuration (excluding sensitive data)",
+        name: "SVN MCP Server Configuration",
+        description: "Main SVN MCP server configuration (excluding sensitive data)",
         mimeType: "application/json"
       });
       
@@ -164,6 +207,62 @@ class CLIServer {
     // Read resource content
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const uri = request.params.uri;
+      
+      // Handle SVN repository resources
+      if (uri.startsWith("svn://") && uri !== "svn://config") {
+        const repositoryId = uri.slice(6); // Remove "svn://" prefix
+        const repositories = readSVNRepositories();
+        const repositoryConfig = repositories[repositoryId];
+        
+        if (!repositoryConfig) {
+          throw new McpError(
+            ErrorCode.InvalidRequest,
+            `Unknown SVN repository: ${repositoryId}`
+          );
+        }
+        
+        // Return repository details (excluding sensitive info)
+        const safeConfig = { ...repositoryConfig };
+        
+        // Remove sensitive information
+        if (safeConfig.password) {
+          safeConfig.password = "********";
+        }
+        
+        return {
+          contents: [{
+            uri,
+            mimeType: "application/json",
+            text: JSON.stringify(safeConfig, null, 2)
+          }]
+        };
+      }
+      
+      // Handle SVN configuration resource
+      if (uri === "svn://config") {
+        const repositories = readSVNRepositories();
+        const safeRepositories = { ...repositories };
+        
+        // Remove sensitive information from all repositories
+        for (const repository of Object.values(safeRepositories)) {
+          if (repository.password) {
+            repository.password = "********";
+          }
+        }
+        
+        return {
+          contents: [{
+            uri,
+            mimeType: "application/json",
+            text: JSON.stringify({
+              enabled: this.config.svn.enabled,
+              defaultTimeout: this.config.svn.defaultTimeout,
+              svnExecutablePath: this.config.svn.svnExecutablePath,
+              repositories: safeRepositories
+            }, null, 2)
+          }]
+        };
+      }
       
       // Handle SSH connection resources
       if (uri.startsWith("ssh://") && uri !== "ssh://config") {
@@ -233,12 +332,18 @@ class CLIServer {
         };
       }
       
-      // Handle CLI configuration resource
+      // Handle server configuration resource
       if (uri === "cli://config") {
         // Create a safe copy of config (excluding sensitive information)
         const safeConfig = {
           security: {
             ...this.config.security,
+          },
+          svn: {
+            enabled: this.config.svn.enabled,
+            defaultTimeout: this.config.svn.defaultTimeout,
+            svnExecutablePath: this.config.svn.svnExecutablePath,
+            repositories: Object.keys(this.config.svn.repositories).length
           },
           shells: {
             ...this.config.shells
@@ -897,7 +1002,7 @@ Use this to cleanly close SSH connections when they're no longer needed.`,
     });
     
     await this.server.connect(transport);
-    console.error("Windows CLI MCP Server running on stdio");
+    console.error("SVN MCP Server running on stdio");
   }
 }
 

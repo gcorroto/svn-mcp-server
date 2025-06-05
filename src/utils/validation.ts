@@ -30,6 +30,22 @@ export function isCommandBlocked(command: string, blockedCommands: string[]): bo
     );
 }
 
+export function isCommandAllowed(command: string, allowedCommands: string[]): boolean {
+    const commandName = extractCommandName(command.toLowerCase());
+    return allowedCommands.some(allowed => 
+        commandName === allowed.toLowerCase() ||
+        commandName === `${allowed.toLowerCase()}.exe` ||
+        commandName === `${allowed.toLowerCase()}.cmd` ||
+        commandName === `${allowed.toLowerCase()}.bat`
+    );
+}
+
+export function isSVNCommand(command: string): boolean {
+    const commandName = extractCommandName(command.toLowerCase());
+    const svnCommands = ['svn', 'svnadmin', 'svnversion', 'svnlook', 'svndumpfilter', 'svnsync'];
+    return svnCommands.includes(commandName);
+}
+
 export function isArgumentBlocked(args: string[], blockedArguments: string[]): boolean {
     return args.some(arg => 
         blockedArguments.some(blocked => 

@@ -1,6 +1,7 @@
 export interface SecurityConfig {
   maxCommandLength: number;
   blockedCommands: string[];
+  allowedCommands: string[];
   blockedArguments: string[];
   allowedPaths: string[];
   restrictWorkingDirectory: boolean;
@@ -16,6 +17,21 @@ export interface ShellConfig {
   args: string[];
   validatePath?: (dir: string) => boolean;
   blockedOperators?: string[]; // Added for shell-specific operator restrictions
+}
+
+export interface SVNRepository {
+  url: string;
+  username?: string;
+  password?: string;
+  workingCopy: string;
+  description?: string;
+}
+
+export interface SVNConfig {
+  enabled: boolean;
+  defaultTimeout: number;
+  svnExecutablePath: string;
+  repositories: Record<string, SVNRepository>;
 }
 
 export interface SSHConnectionConfig {
@@ -41,6 +57,7 @@ export interface SSHConfig {
 
 export interface ServerConfig {
   security: SecurityConfig;
+  svn: SVNConfig;
   shells: {
     powershell: ShellConfig;
     cmd: ShellConfig;
@@ -55,4 +72,5 @@ export interface CommandHistoryEntry {
   timestamp: string;
   exitCode: number;
   connectionId?: string;
+  repositoryId?: string;
 }

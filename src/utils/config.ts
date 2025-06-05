@@ -9,11 +9,13 @@ export const DEFAULT_CONFIG: ServerConfig = {
   security: {
     maxCommandLength: 2000,
     blockedCommands: [
-      'rm', 'del', 'rmdir', 'format',
-      'shutdown', 'restart',
+      'format', 'shutdown', 'restart',
       'reg', 'regedit',
       'net', 'netsh',
       'takeown', 'icacls'
+    ],
+    allowedCommands: [
+      'svn', 'svnadmin', 'svnversion', 'svnlook', 'svndumpfilter', 'svnsync'
     ],
     blockedArguments: [
       "--exec", "-e", "/c", "-enc", "-encodedcommand",
@@ -21,17 +23,24 @@ export const DEFAULT_CONFIG: ServerConfig = {
     ],
     allowedPaths: [
       os.homedir(),
-      process.cwd()
+      process.cwd(),
+      'C:\\SVN'
     ],
     restrictWorkingDirectory: true,
     logCommands: true,
     maxHistorySize: 1000,
-    commandTimeout: 30,
+    commandTimeout: 60,
     enableInjectionProtection: true
+  },
+  svn: {
+    enabled: true,
+    defaultTimeout: 60,
+    svnExecutablePath: 'svn',
+    repositories: {}
   },
   shells: {
     powershell: {
-      enabled: true,
+      enabled: false,
       command: 'powershell.exe',
       args: ['-NoProfile', '-NonInteractive', '-Command'],
       validatePath: (dir: string) => dir.match(defaultValidatePathRegex) !== null,
@@ -45,7 +54,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
       blockedOperators: ['&', '|', ';', '`']
     },
     gitbash: {
-      enabled: true,
+      enabled: false,
       command: 'C:\\Program Files\\Git\\bin\\bash.exe',
       args: ['-c'],
       validatePath: (dir: string) => dir.match(defaultValidatePathRegex) !== null,
@@ -105,6 +114,16 @@ function mergeConfigs(defaultConfig: ServerConfig, userConfig: Partial<ServerCon
       // If user provided security config, use it entirely, otherwise use default
       ...(userConfig.security || defaultConfig.security)
     },
+    svn: {
+      // Merge SVN config
+      ...(defaultConfig.svn),
+      ...(userConfig.svn || {}),
+      // Ensure repositories are merged
+      repositories: {
+        ...(defaultConfig.svn.repositories),
+        ...(userConfig.svn?.repositories || {})
+      }
+    },
     shells: {
       // Same for each shell - if user provided config, use it entirely
       powershell: userConfig.shells?.powershell || defaultConfig.shells.powershell,
@@ -156,6 +175,25 @@ function validateConfig(config: ServerConfig): void {
   // Validate timeout (minimum 1 second)
   if (config.security.commandTimeout < 1) {
     throw new Error('commandTimeout must be at least 1 second');
+  }
+
+  // Validate SVN configuration
+  if (config.svn.enabled) {
+    if (config.svn.defaultTimeout < 1) {
+      throw new Error('SVN defaultTimeout must be at least 1 second');
+    }
+    
+    // Validate individual repositories
+    for (const [repoId, repo] of Object.entries(config.svn.repositories)) {
+      if (!repo.url || !repo.workingCopy) {
+        throw new Error(`Invalid SVN repository config for '${repoId}': missing required fields (url, workingCopy)`);
+      }
+      
+      // Validate that workingCopy is an absolute path
+      if (!path.isAbsolute(repo.workingCopy)) {
+        throw new Error(`Invalid SVN repository config for '${repoId}': workingCopy must be an absolute path`);
+      }
+    }
   }
 
   // Validate SSH configuration
